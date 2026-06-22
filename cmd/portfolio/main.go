@@ -478,21 +478,12 @@ func findRegistryManifest(registryDir, repoName string) (string, bool) {
 }
 
 // deriveRepoName derives the owner/name from a remote URL or falls back to
-// the on-disk dir name. Used as the Merge match key.
+// the on-disk dir name. Used as the Merge match key. Delegates remote
+// normalization to catalog.NormalizeRepo (the canonical key helper shared
+// with the projects roll-up).
 func deriveRepoName(remote, path string) string {
-	remote = strings.TrimSpace(remote)
-	if remote != "" {
-		// Strip scheme + .git suffix; keep owner/name.
-		u := remote
-		u = strings.TrimPrefix(u, "https://")
-		u = strings.TrimPrefix(u, "git@github.com:")
-		u = strings.TrimPrefix(u, "ssh://git@github.com/")
-		u = strings.TrimSuffix(u, ".git")
-		// u is now "owner/name".
-		if parts := strings.Split(u, "/"); len(parts) >= 2 {
-			return strings.Join(parts[len(parts)-2:], "/")
-		}
-		return u
+	if norm := catalog.NormalizeRepo(remote); norm != "" && strings.Contains(norm, "/") {
+		return norm
 	}
 	// Fall back to the dir name.
 	return filepath.Base(path)
