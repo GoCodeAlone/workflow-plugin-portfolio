@@ -15,9 +15,11 @@ import (
 //
 // The parser is line-oriented and tolerant: it scans for `## <name>` headers
 // (level-2 headings, skipping the `# Projects` title and the trailing
-// `## Unmapped` section which is generator-written), and within each block
-// reads the status:/phase: inline fields plus the `- repos:`/`- goal:`/
-// `- blockers:`/`- next:`/`- design:`/`- scan:` bullet rows.
+// `## Unmapped` section which is generator-written). The status + phase are
+// read from the INLINE header (`## <name>   status: X   phase: Y`, 3-space
+// separators) — the canonical shape Write emits — with a tolerant fallback to
+// separate `status:`/`phase:` lines for older seeds. The `- repos:`/`- goal:`/
+// `- blockers:`/`- next:`/`- design:`/`- scan:` bullet rows are read as before.
 //
 // A missing file is an error (the caller decides opt-in skip before calling).
 func ParseProjects(path string) ([]Project, error) {
@@ -51,11 +53,13 @@ func ParseProjects(path string) ([]Project, error) {
 			heading := strings.TrimSpace(strings.TrimPrefix(line, "## "))
 			flush()
 			// The Unmapped section is generator-written and regenerated, not
-			// parsed as a project.
-			if heading == "Unmapped" {
+			// parsed as a project. Match on the bare name (it carries no
+			// inline status/phase).
+			if name, _, _ := splitInlineHeader(heading); name == "Unmapped" {
 				break
 			}
-			current = &Project{Name: heading}
+			name, status, phase := splitInlineHeader(heading)
+			current = &Project{Name: name, Status: status, Phase: phase}
 			continue
 		}
 
@@ -63,13 +67,20 @@ func ParseProjects(path string) ([]Project, error) {
 			continue
 		}
 
-		// Inline header fields: "status:" / "phase:".
+		// Tolerant fallback for older seeds that put status/phase on their
+		// own lines instead of the inline header. The inline header (parsed
+		// above) wins when present; these only fill an empty field so the
+		// legacy separate-line shape still round-trips.
 		if strings.HasPrefix(trimmed, "status:") {
-			current.Status = strings.TrimSpace(strings.TrimPrefix(trimmed, "status:"))
+			if current.Status == "" {
+				current.Status = strings.TrimSpace(strings.TrimPrefix(trimmed, "status:"))
+			}
 			continue
 		}
 		if strings.HasPrefix(trimmed, "phase:") {
-			current.Phase = strings.TrimSpace(strings.TrimPrefix(trimmed, "phase:"))
+			if current.Phase == "" {
+				current.Phase = strings.TrimSpace(strings.TrimPrefix(trimmed, "phase:"))
+			}
 			continue
 		}
 
@@ -104,8 +115,54 @@ func ParseProjects(path string) ([]Project, error) {
 	return projects, nil
 }
 
-// splitBullet splits a "- field: value" bullet into (field, value). Returns
-// ok=false if the bullet has no colon (not a recognized field row).
+// splitInlineHeader splits a level-2 heading body into its name + inline
+// status + phase. The canonical shape Write emits is:
+//
+//	<name>   status: <status>   phase: <phase>
+//
+// with 3-space separators. name is always returned. status/phase are empty
+// when the heading carries no inline fields (older seeds, or a heading whose
+// name happens to contain "status:"/"phase:" but not in the canonical shape).
+//
+// The name is everything before the first "   status:" run; a bare heading
+// with no inline fields returns the whole (trimmed) body as the name.
+func splitInlineHeader(heading string) (name, status, phase string) {
+	statusIdx := strings.Index(heading, "status:")
+	phaseIdx := strings.Index(heading, "phase:")
+	if statusIdx < 0 && phaseIdx < 0 {
+		return heading, "", ""
+	}
+	// Canonical order is name, then status:, then phase:. If both markers are
+	// present, status comes before phase; take the name as everything before
+	// the earlier marker.
+	first := statusIdx
+	if first < 0 || (phaseIdx >= 0 && phaseIdx < first) {
+		first = phaseIdx
+	}
+	name = strings.TrimRight(heading[:first], " ")
+
+	if statusIdx >= 0 {
+		// Status value runs from after "status:" up to the phase: marker (if
+		// it follows) or end of heading.
+		rest := heading[statusIdx+len("status:"):]
+		end := strings.Index(rest, "phase:")
+		if end >= 0 {
+			rest = rest[:end]
+		}
+		status = strings.TrimSpace(rest)
+	}
+	if phaseIdx >= 0 {
+		rest := heading[phaseIdx+len("phase:"):]
+		// Phase value runs up to a subsequent status: marker (defensive: a
+		// heading with phase before status), else end.
+		end := strings.Index(rest, "status:")
+		if end >= 0 {
+			rest = rest[:end]
+		}
+		phase = strings.TrimSpace(rest)
+	}
+	return name, status, phase
+}
 func splitBullet(trimmed string) (field, value string, ok bool) {
 	rest := strings.TrimPrefix(trimmed, "- ")
 	idx := strings.Index(rest, ":")

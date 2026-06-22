@@ -179,6 +179,96 @@ phase: 0
 	}
 }
 
+// TestParseInlineHeaderRecoversStatusPhase is the FIX 1 headline proof: a
+// project block whose identity line carries status + phase INLINE
+// (`## <name>   status: X   phase: Y`) is parsed with all three fields
+// (Name/Status/Phase) read from the header line — NOT from separate
+// status:/phase: lines. This is the canonical shape Write emits.
+func TestParseInlineHeaderRecoversStatusPhase(t *testing.T) {
+	const body = `# Projects
+
+## Workflow engine   status: active   phase: production
+
+- repos: GoCodeAlone/workflow, GoCodeAlone/modular
+- goal: engine
+- scan: last-activity 2026-06-21, active 2/2 repos, open-PRs 1, open-issues 0
+`
+	path := writeFixture(t, "PROJECTS.md", body)
+	got, err := ParseProjects(path)
+	if err != nil {
+		t.Fatalf("ParseProjects: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 project, got %d: %#v", len(got), got)
+	}
+	want := Project{
+		Name:   "Workflow engine",
+		Status: "active",
+		Phase:  "production",
+		Repos:  []string{"GoCodeAlone/workflow", "GoCodeAlone/modular"},
+		Goal:   "engine",
+		Scan:   "last-activity 2026-06-21, active 2/2 repos, open-PRs 1, open-issues 0",
+	}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("inline-header parse mismatch:\n got: %#v\nwant: %#v", got[0], want)
+	}
+}
+
+// TestParseInlineHeaderMultiWordName confirms a project name containing spaces
+// is correctly split off from the inline status/phase markers.
+func TestParseInlineHeaderMultiWordName(t *testing.T) {
+	const body = `# Projects
+
+## misc tools & libs   status: mixed   phase: various
+
+- repos: GoCodeAlone/ratchet
+- scan: ?
+`
+	path := writeFixture(t, "PROJECTS.md", body)
+	got, err := ParseProjects(path)
+	if err != nil {
+		t.Fatalf("ParseProjects: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(got))
+	}
+	if got[0].Name != "misc tools & libs" {
+		t.Errorf("Name = %q, want %q", got[0].Name, "misc tools & libs")
+	}
+	if got[0].Status != "mixed" {
+		t.Errorf("Status = %q, want mixed", got[0].Status)
+	}
+	if got[0].Phase != "various" {
+		t.Errorf("Phase = %q, want various", got[0].Phase)
+	}
+}
+
+// TestParseBareHeaderNoInlineFields: a heading with NO inline status/phase
+// (e.g. legacy seed) returns just the name; the whole body is the name.
+func TestParseBareHeadingNoInlineFields(t *testing.T) {
+	const body = `# Projects
+
+## Auth
+
+- repos: GoCodeAlone/workflow-plugin-auth
+- scan: ?
+`
+	path := writeFixture(t, "PROJECTS.md", body)
+	got, err := ParseProjects(path)
+	if err != nil {
+		t.Fatalf("ParseProjects: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(got))
+	}
+	if got[0].Name != "Auth" {
+		t.Errorf("Name = %q, want Auth", got[0].Name)
+	}
+	if got[0].Status != "" || got[0].Phase != "" {
+		t.Errorf("bare heading should have empty status/phase, got Status=%q Phase=%q", got[0].Status, got[0].Phase)
+	}
+}
+
 // writeFixture writes content to a temp file and returns its path.
 func writeFixture(t *testing.T, name, content string) string {
 	t.Helper()
