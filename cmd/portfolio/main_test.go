@@ -81,18 +81,14 @@ func TestDispatchUnknownSubcommand(t *testing.T) {
 	}
 }
 
-// TestDispatchScanStubNotImplemented verifies the scan stub runs (does not
-// panic) and prints a not-implemented marker. The real implementation lands
-// in a later task; for now we only lock the dispatch shape.
-func TestDispatchScanStubNotImplemented(t *testing.T) {
+// TestDispatchScanNoArgsErrors verifies scan with no workspace-root arg
+// exits non-zero with a usage message (scan requires a workspace root).
+func TestDispatchScanNoArgsErrors(t *testing.T) {
 	t.Parallel()
-	var out bytes.Buffer
-	code := dispatch([]string{"--wfctl-cli", "portfolio", "scan"}, &out, io.Discard)
-	if code != 0 {
-		t.Fatalf("expected exit 0 for scan stub, got %d", code)
-	}
-	if !strings.Contains(strings.ToLower(out.String()), "not implemented") {
-		t.Errorf("scan stub should report not-implemented; output:\n%s", out.String())
+	var out, errOut bytes.Buffer
+	code := dispatch([]string{"--wfctl-cli", "portfolio", "scan"}, &out, &errOut)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for scan with no workspace-root, got 0")
 	}
 }
 

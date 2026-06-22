@@ -11,3 +11,6 @@ dist/
 # Editor / OS noise
 .DS_Store
 *.swp
+
+# Local autodev session state (not part of the plugin)
+.claude/
