@@ -81,11 +81,3 @@ type Scan struct {
 	// The caller warns on stderr; the roll-up does not silently drop them.
 	Missing []string
 }
-
-// RollUpResult holds the per-project scans plus the aggregate missing list,
-// keyed by project Name. MissingRepos is the union of all projects' Missing
-// lists for the caller to warn about in one pass.
-type RollUpResult struct {
-	Scans       map[string]Scan
-	MissingRepos []string
-}
