@@ -26,9 +26,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/GoCodeAlone/workflow-plugin-portfolio/internal/catalog"
 	"github.com/GoCodeAlone/workflow-plugin-portfolio/internal/followups"
+	"github.com/GoCodeAlone/workflow-plugin-portfolio/internal/projects"
 	"github.com/GoCodeAlone/workflow-plugin-portfolio/internal/scanner"
 	"github.com/GoCodeAlone/workflow-plugin-portfolio/internal/visibility"
 	"github.com/GoCodeAlone/workflow/capability/inventory"
@@ -340,7 +342,82 @@ func runScan(ctx context.Context, opts scanOptions, stdout, stderr io.Writer) in
 	} else {
 		fmt.Fprintf(stdout, "scan: wrote docs/FOLLOWUPS.md (%d follow-ups)\n", len(fups))
 	}
+
+	// 7. PROJECTS.md roll-up (OPT-IN): if docs/PROJECTS.md exists, roll up
+	// per-project signals from the in-memory catalog scan results and rewrite
+	// ONLY the scan rows (P-V1). If PROJECTS.md is absent, skip — the file is
+	// opt-in (never created by scan). Missing-member repos are warned on
+	// stderr (P-V6).
+	writeProjectsRollup(docsDir, merged, stdout, stderr)
+
 	return 0
+}
+
+// writeProjectsRollup performs the optional PROJECTS.md roll-up. It is a no-op
+// (opt-in) when docs/PROJECTS.md does not exist. When present, it parses the
+// existing project→repo mapping, rolls up per-project signals from the catalog
+// scan results, rewrites ONLY the scan rows (preserving curated fields, P-V1),
+// and writes PROJECTS.md back. Missing-member repos are warned on stderr.
+func writeProjectsRollup(docsDir string, scanned []catalog.Project, stdout, stderr io.Writer) {
+	projectsPath := filepath.Join(docsDir, "PROJECTS.md")
+	if _, err := os.Stat(projectsPath); err != nil {
+		// Opt-in: PROJECTS.md absent — do not create it.
+		return
+	}
+
+	existing, err := projects.ParseProjects(projectsPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "warn: parse existing %s: %v (skipping PROJECTS.md roll-up)\n", projectsPath, err)
+		return
+	}
+
+	scans := projects.RollUp(existing, scanned, time.Now())
+
+	// P-V6: warn about missing-member repos (catalog rows not found).
+	warned := make(map[string]bool)
+	for _, p := range existing {
+		if sc, ok := scans[p.Name]; ok {
+			for _, missing := range sc.Missing {
+				if !warned[missing] {
+					fmt.Fprintf(stderr, "warn: PROJECTS.md project %q references repo %q not found in catalog scan\n", p.Name, missing)
+					warned[missing] = true
+				}
+			}
+		}
+	}
+
+	merged := projects.Merge(existing, scans)
+
+	// Compute Unmapped: catalog repos in no project. A repo is "mapped" if it
+	// appears in some project's Repos list (normalized to canonical key).
+	mapped := make(map[string]bool)
+	for _, p := range existing {
+		for _, r := range p.Repos {
+			mapped[catalog.NormalizeRepo(r)] = true
+		}
+	}
+	var unmapped []string
+	for _, c := range scanned {
+		key := catalog.NormalizeRepo(c.Scan.Remote)
+		if key == "" || !strings.Contains(key, "/") {
+			key = c.Repo
+		}
+		if !mapped[key] {
+			unmapped = append(unmapped, key)
+		}
+	}
+
+	f, err := os.Create(projectsPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "warn: write PROJECTS.md: %v\n", err)
+		return
+	}
+	defer f.Close()
+	if wErr := projects.Write(f, merged, unmapped); wErr != nil {
+		fmt.Fprintf(stderr, "warn: render PROJECTS.md: %v\n", wErr)
+		return
+	}
+	fmt.Fprintf(stdout, "scan: wrote %s (%d projects)\n", projectsPath, len(merged))
 }
 
 // runStatusCmd parses status args and invokes runStatus. Status takes only
