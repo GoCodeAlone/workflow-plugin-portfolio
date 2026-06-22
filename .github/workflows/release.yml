@@ -60,7 +60,7 @@ jobs:
             '[.[] | select(.type=="Binary" and .goos=="linux" and .goarch==$arch and (.name|startswith("portfolio")))] | .[0].path // ""' \
             dist/artifacts.json)
           if [ -z "$BIN" ] || [ "$BIN" = "null" ]; then
-            echo "::warning::No matching linux/$RUNNER_ARCH binary in dist/artifacts.json; skipping verify-capabilities"
+            echo "::warning::No matching linux/$RUNNER_ARCH binary in dist/artifacts.json; skipping dispatch check"
             jq '.[] | {name, type, goos, goarch, path}' dist/artifacts.json
             exit 0
           fi
