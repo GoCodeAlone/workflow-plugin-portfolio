@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  GONOSUMCHECK: github.com/GoCodeAlone/*
+  GONOSUMDB: github.com/GoCodeAlone/*
+  GOPRIVATE: github.com/GoCodeAlone/*
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Configure git for private modules
+        run: git config --global url."https://${{ secrets.RELEASES_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install wfctl v0.80.25
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wfctl-bin"
+          curl -sSfL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -o "${RUNNER_TEMP}/wfctl-bin/wfctl" \
+            "https://github.com/GoCodeAlone/workflow/releases/download/v0.80.25/wfctl-linux-amd64"
+          chmod +x "${RUNNER_TEMP}/wfctl-bin/wfctl"
+
+      - name: Validate plugin contract for publish (pre-build)
+        run: "${{ runner.temp }}/wfctl-bin/wfctl plugin validate-contract --for-publish --tag ${{ github.ref_name }} ."
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GOPRIVATE: github.com/GoCodeAlone/*
+
+      # workflow#765: runtime truth-check via plugin verify-capabilities.
+      # Confirms the shipped binary actually answers the declared
+      # capabilities.cliCommands dispatch (--wfctl-cli portfolio ...).
+      - name: Verify capabilities (runtime truth-check)
+        run: |
+          RUNNER_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          BIN=$(jq -r --arg arch "$RUNNER_ARCH" \
+            '[.[] | select(.type=="Binary" and .goos=="linux" and .goarch==$arch and (.name|startswith("portfolio")))] | .[0].path // ""' \
+            dist/artifacts.json)
+          if [ -z "$BIN" ] || [ "$BIN" = "null" ]; then
+            echo "::warning::No matching linux/$RUNNER_ARCH binary in dist/artifacts.json; skipping verify-capabilities"
+            jq '.[] | {name, type, goos, goarch, path}' dist/artifacts.json
+            exit 0
+          fi
+          "${{ runner.temp }}/wfctl-bin/wfctl" plugin verify-capabilities --binary "$BIN" .
+
+      - name: Verify shipped plugin.json carries tag (post-build)
+        run: "${{ runner.temp }}/wfctl-bin/wfctl plugin validate-contract --for-publish --tag ${{ github.ref_name }} --release-dir . ."
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify GitHub release is published
+        if: ${{ success() }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! draft="$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json isDraft --jq .isDraft)"; then
+            echo "::error::Unable to verify release ${{ github.ref_name }}."
+            exit 1
+          fi
+          if [ "$draft" != "false" ]; then
+            echo "::error::Release ${{ github.ref_name }} is not published. GoReleaser must publish directly; immutable GitHub releases cannot be flipped after upload."
+            exit 1
+          fi
+          echo "Release ${{ github.ref_name }} is published."
+
+  notify-workflow-registry:
+    name: Notify workflow-registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: publish-release
+    if: >-
+      !github.event.deleted
+      && !contains(github.ref_name, '-')
+      && github.repository == 'GoCodeAlone/workflow-plugin-portfolio'
+    steps:
+      - name: Trigger registry manifest sync
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697  # v4
+        with:
+          token: ${{ secrets.repo_dispatch_token }}
+          repository: GoCodeAlone/workflow-registry
+          event-type: plugin-release
+          # Bare-name plugin ("portfolio") matches the manifest key written
+          # by the registry resolver; a "/" in the payload is rejected.
+          client-payload: |-
+            {"plugin": "portfolio", "tag": "${{ github.ref_name }}"}

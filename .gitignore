@@ -1,0 +1,13 @@
+# Built binary (matches goreleaser `binary: portfolio`)
+/portfolio
+/bin/
+
+# Goreleaser output
+dist/
+
+# Version-stamp backup (before.hooks rm step)
+*.bak
+
+# Editor / OS noise
+.DS_Store
+*.swp

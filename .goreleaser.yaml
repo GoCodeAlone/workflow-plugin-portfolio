@@ -1,0 +1,41 @@
+version: 2
+
+project_name: workflow-plugin-portfolio
+
+# Version-stamp plugin.json in-place before building, so the released
+# archive carries the tag version. Matches the workflow-plugin-admin shape
+# (sed + rm .bak), producing a FLAT archive: binary + plugin.json at root.
+before:
+  hooks:
+    - go mod tidy
+    - "sed -i.bak 's/\"version\": \".*\"/\"version\": \"{{ .Version }}\"/' plugin.json && rm -f plugin.json.bak"
+
+builds:
+  - id: workflow-plugin-portfolio
+    main: ./cmd/portfolio
+    binary: portfolio
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # FLAT archive: no wrap_in_directory. plugin.json sits at the archive
+  # root next to the binary, matching workflow-plugin-admin / -hover.
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - plugin.json
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+
+release:
+  draft: false
