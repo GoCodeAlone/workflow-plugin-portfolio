@@ -66,11 +66,11 @@ func GHFacts(repoFullName string) (openPRs, openIssues int, latestRelease string
 		return 0, 0, "", fmt.Errorf("%w: gh binary not found in PATH (%v)", ErrGHUnavailable, lookupErr)
 	}
 
-	prs, prErr := ghCount(repoFullName, "pr", "list", "--state", "open", "--json", "number")
+	prs, prErr := ghCount(repoFullName, "pr", "--state", "open", "--json", "number")
 	if prErr != nil {
 		return 0, 0, "", prErr
 	}
-	issues, issErr := ghCount(repoFullName, "issue", "list", "--state", "open", "--json", "number")
+	issues, issErr := ghCount(repoFullName, "issue", "--state", "open", "--json", "number")
 	if issErr != nil {
 		return 0, 0, "", issErr
 	}
