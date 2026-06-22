@@ -49,10 +49,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           GOPRIVATE: github.com/GoCodeAlone/*
 
-      # workflow#765: runtime truth-check via plugin verify-capabilities.
-      # Confirms the shipped binary actually answers the declared
-      # capabilities.cliCommands dispatch (--wfctl-cli portfolio ...).
-      - name: Verify capabilities (runtime truth-check)
+      # CLI-only plugin (capabilities.cliCommands, NO host/gRPC protocol):
+      # wfctl plugin verify-capabilities calls PluginService.GetManifest via gRPC
+      # — inapplicable to a pure-cliCommands binary (fails the go-plugin handshake).
+      # Runtime truth-check that applies here = the declared cliCommands dispatch.
+      - name: Verify cliCommands dispatch (runtime truth-check)
         run: |
           RUNNER_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
           BIN=$(jq -r --arg arch "$RUNNER_ARCH" \
@@ -63,7 +64,8 @@ jobs:
             jq '.[] | {name, type, goos, goarch, path}' dist/artifacts.json
             exit 0
           fi
-          "${{ runner.temp }}/wfctl-bin/wfctl" plugin verify-capabilities --binary "$BIN" .
+          "$BIN" --wfctl-cli portfolio scan --help >/dev/null
+          echo "cliCommands dispatch OK (--wfctl-cli portfolio scan --help exited 0)"
 
       - name: Verify shipped plugin.json carries tag (post-build)
         run: "${{ runner.temp }}/wfctl-bin/wfctl plugin validate-contract --for-publish --tag ${{ github.ref_name }} --release-dir . ."
