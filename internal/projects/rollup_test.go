@@ -191,6 +191,183 @@ func TestRollUpEmptyProjects(t *testing.T) {
 	}
 }
 
+// TestRollUpGlobPrecedence is the FIX 2 headline proof: a project with a glob
+// `GoCodeAlone/workflow-plugin-*` rolls up ALL matching catalog plugins, EXCEPT
+// repos explicitly claimed by another project's exact `repos:` entry (explicit
+// over glob). A non-plugin repo (workflow) is NOT matched by the glob. No
+// double-counting: a repo explicitly in one project is absent from the glob
+// project's roll-up.
+func TestRollUpGlobPrecedence(t *testing.T) {
+	// Catalog: 4 plugins + the engine + an unrelated repo.
+	catalogRepos := []catalog.Project{
+		{Repo: "GoCodeAlone/workflow-plugin-auth", Category: "plugin",
+			Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/workflow-plugin-auth.git", LastCommitISO: "2026-06-20T00:00:00Z"},
+			Release: catalog.ReleaseFacts{OpenPRs: 1, OpenIssues: 1}},
+		{Repo: "GoCodeAlone/workflow-plugin-compute", Category: "plugin",
+			Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/workflow-plugin-compute.git", LastCommitISO: "2026-06-19T00:00:00Z"},
+			Release: catalog.ReleaseFacts{OpenPRs: 2, OpenIssues: 2}},
+		{Repo: "GoCodeAlone/workflow-plugin-infra", Category: "plugin",
+			Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/workflow-plugin-infra.git", LastCommitISO: "2026-06-18T00:00:00Z"},
+			Release: catalog.ReleaseFacts{OpenPRs: 3, OpenIssues: 3}},
+		{Repo: "GoCodeAlone/workflow-plugin-portfolio", Category: "plugin",
+			Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/workflow-plugin-portfolio.git", LastCommitISO: "2026-06-17T00:00:00Z"},
+			Release: catalog.ReleaseFacts{OpenPRs: 4, OpenIssues: 4}},
+		{Repo: "GoCodeAlone/workflow", Category: "engine",
+			Scan: catalog.ScanFacts{Remote: "https://github.com/GoCodeAlone/workflow.git", LastCommitISO: "2026-06-16T00:00:00Z"},
+			Release: catalog.ReleaseFacts{OpenPRs: 9, OpenIssues: 9}},
+		{Repo: "GoCodeAlone/orphan-repo", Category: "other",
+			Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/orphan-repo.git", LastCommitISO: "2026-06-15T00:00:00Z"}},
+	}
+
+	projects := []Project{
+		{
+			Name:  "Workflow engine",
+			Repos: []string{"GoCodeAlone/workflow", "GoCodeAlone/workflow-plugin-*"}, // glob
+		},
+		{
+			Name:  "Workflow-Compute",
+			Repos: []string{"GoCodeAlone/workflow-plugin-compute"}, // exact claim
+		},
+	}
+
+	// Resolve globs against the catalog (explicit-over-glob precedence).
+	resolved := ExpandGlobs(projects, catalogRepos)
+
+	// Engine: workflow (exact) + auth, infra, portfolio (glob matches NOT
+	// claimed by compute). compute-* is EXCLUDED (explicitly in Compute).
+	engineRepos := reposByName(resolved, "Workflow engine")
+	if !containsAll(engineRepos, "GoCodeAlone/workflow", "GoCodeAlone/workflow-plugin-auth",
+		"GoCodeAlone/workflow-plugin-infra", "GoCodeAlone/workflow-plugin-portfolio") {
+		t.Errorf("engine resolved repos = %v; want workflow + auth/infra/portfolio (glob minus compute)", engineRepos)
+	}
+	if containsAny(engineRepos, "GoCodeAlone/workflow-plugin-compute") {
+		t.Errorf("engine must NOT include workflow-plugin-compute (explicitly claimed by Compute): %v", engineRepos)
+	}
+
+	// Compute: only its explicit repo.
+	computeRepos := reposByName(resolved, "Workflow-Compute")
+	if len(computeRepos) != 1 || computeRepos[0] != "GoCodeAlone/workflow-plugin-compute" {
+		t.Errorf("compute resolved repos = %v; want only [workflow-plugin-compute]", computeRepos)
+	}
+
+	// Roll up the RESOLVED membership and verify no double-counting.
+	now := mustTime(t, "2026-06-21T00:00:00Z")
+	scans := RollUp(resolved, catalogRepos, now)
+
+	engineScan := scans["Workflow engine"]
+	// 4 members (workflow + auth + infra + portfolio); open-PRs 9+1+3+4=17,
+	// open-issues 9+1+3+4=17.
+	if engineScan.TotalRepos != 4 {
+		t.Errorf("engine TotalRepos = %d, want 4 (workflow + 3 glob plugins, compute excluded)", engineScan.TotalRepos)
+	}
+	if engineScan.OpenPRs != 17 {
+		t.Errorf("engine OpenPRs = %d, want 17 (9+1+3+4)", engineScan.OpenPRs)
+	}
+	if engineScan.OpenIssues != 17 {
+		t.Errorf("engine OpenIssues = %d, want 17 (9+1+3+4)", engineScan.OpenIssues)
+	}
+	// LastActivity = max across members = 2026-06-20 (auth).
+	if engineScan.LastActivity != "2026-06-20" {
+		t.Errorf("engine LastActivity = %q, want 2026-06-20", engineScan.LastActivity)
+	}
+	if len(engineScan.Missing) != 0 {
+		t.Errorf("engine Missing = %v, want empty (all glob matches resolved)", engineScan.Missing)
+	}
+
+	computeScan := scans["Workflow-Compute"]
+	if computeScan.TotalRepos != 1 {
+		t.Errorf("compute TotalRepos = %d, want 1", computeScan.TotalRepos)
+	}
+	if computeScan.OpenPRs != 2 {
+		t.Errorf("compute OpenPRs = %d, want 2 (NOT double-counted in engine)", computeScan.OpenPRs)
+	}
+
+	// Sanity: orphan-repo is NOT claimed by any glob.
+	for _, r := range engineRepos {
+		if r == "GoCodeAlone/orphan-repo" {
+			t.Errorf("orphan-repo matched by workflow-plugin-* glob: %v", engineRepos)
+		}
+	}
+}
+
+// TestRollUpGlobNoMatch: a glob that matches nothing resolves to an empty
+// membership (TotalRepos 0), and does NOT error. The curated glob is
+// preserved in the original Repos (separate from resolved).
+func TestRollUpGlobNoMatch(t *testing.T) {
+	catalogRepos := []catalog.Project{
+		{Repo: "GoCodeAlone/workflow", Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/workflow.git"}},
+	}
+	projects := []Project{
+		{Name: "p", Repos: []string{"GoCodeAlone/nope-*"}},
+	}
+	resolved := ExpandGlobs(projects, catalogRepos)
+	if got := reposByName(resolved, "p"); len(got) != 0 {
+		t.Errorf("glob with no matches resolved to %v, want empty", got)
+	}
+	// Curated Repos unchanged (glob preserved verbatim for Write).
+	if len(projects[0].Repos) != 1 || projects[0].Repos[0] != "GoCodeAlone/nope-*" {
+		t.Errorf("curated Repos mutated by ExpandGlobs: %v (must be preserved)", projects[0].Repos)
+	}
+}
+
+// TestRollUpExplicitOverGlobMultipleProjects: a repo explicitly claimed by TWO
+// projects cannot exist (a repo is in at most one explicit list), but a glob
+// must still skip repos explicitly claimed by ANY project. Verify with two
+// exact-claim projects + one glob project.
+func TestRollUpExplicitOverGlobMultipleProjects(t *testing.T) {
+	catalogRepos := []catalog.Project{
+		{Repo: "GoCodeAlone/workflow-plugin-a", Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/workflow-plugin-a.git", LastCommitISO: "2026-06-01T00:00:00Z"}},
+		{Repo: "GoCodeAlone/workflow-plugin-b", Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/workflow-plugin-b.git", LastCommitISO: "2026-06-02T00:00:00Z"}},
+		{Repo: "GoCodeAlone/workflow-plugin-c", Scan: catalog.ScanFacts{Remote: "git@github.com:GoCodeAlone/workflow-plugin-c.git", LastCommitISO: "2026-06-03T00:00:00Z"}},
+	}
+	projects := []Project{
+		{Name: "A", Repos: []string{"GoCodeAlone/workflow-plugin-a"}},      // exact
+		{Name: "B", Repos: []string{"GoCodeAlone/workflow-plugin-b"}},      // exact
+		{Name: "C", Repos: []string{"GoCodeAlone/workflow-plugin-*"}},      // glob -> only c remains
+	}
+	resolved := ExpandGlobs(projects, catalogRepos)
+	if got := reposByName(resolved, "C"); len(got) != 1 || got[0] != "GoCodeAlone/workflow-plugin-c" {
+		t.Errorf("C resolved = %v; want only [workflow-plugin-c] (a,b explicitly claimed)", got)
+	}
+}
+
+// reposByName returns the resolved repos for the named project (test helper).
+func reposByName(projects []Project, name string) []string {
+	for _, p := range projects {
+		if p.Name == name {
+			return p.Repos
+		}
+	}
+	return nil
+}
+
+func containsAll(haystack []string, needles ...string) bool {
+	for _, n := range needles {
+		found := false
+		for _, h := range haystack {
+			if h == n {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAny(haystack []string, needles ...string) bool {
+	for _, n := range needles {
+		for _, h := range haystack {
+			if h == n {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // mustTime parses an RFC3339 time, failing the test on error.
 func mustTime(t *testing.T, s string) time.Time {
 	t.Helper()

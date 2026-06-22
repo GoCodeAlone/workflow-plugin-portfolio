@@ -371,11 +371,18 @@ func writeProjectsRollup(docsDir string, scanned []catalog.Project, stdout, stde
 		return
 	}
 
-	scans := projects.RollUp(existing, scanned, time.Now())
+	// Resolve glob repos: entries (e.g. GoCodeAlone/workflow-plugin-*) against
+	// the catalog scan, with explicit-over-glob precedence. The RESOLVED
+	// membership drives RollUp + Unmapped; the CURATED existing (which may
+	// contain globs) is what Merge/Write preserve verbatim (P-V1: the human's
+	// `repos:` row is rewritten byte-identical across re-scans).
+	resolved := projects.ExpandGlobs(existing, scanned)
+
+	scans := projects.RollUp(resolved, scanned, time.Now())
 
 	// P-V6: warn about missing-member repos (catalog rows not found).
 	warned := make(map[string]bool)
-	for _, p := range existing {
+	for _, p := range resolved {
 		if sc, ok := scans[p.Name]; ok {
 			for _, missing := range sc.Missing {
 				if !warned[missing] {
@@ -389,9 +396,10 @@ func writeProjectsRollup(docsDir string, scanned []catalog.Project, stdout, stde
 	merged := projects.Merge(existing, scans)
 
 	// Compute Unmapped: catalog repos in no project. A repo is "mapped" if it
-	// appears in some project's Repos list (normalized to canonical key).
+	// appears in some project's RESOLVED membership (globs expanded) — so a
+	// repo absorbed by a glob is NOT listed as unmapped.
 	mapped := make(map[string]bool)
-	for _, p := range existing {
+	for _, p := range resolved {
 		for _, r := range p.Repos {
 			mapped[catalog.NormalizeRepo(r)] = true
 		}
