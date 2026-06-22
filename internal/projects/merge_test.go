@@ -166,6 +166,56 @@ func TestWriteMergeRoundTripParsesBack(t *testing.T) {
 	}
 }
 
+// TestWriteEmitsInlineHeaderNoSeparateStatusPhase is the FIX 1 round-trip
+// proof: Write emits the inline header `## <name>   status: X   phase: Y` and
+// does NOT emit separate `status:` / `phase:` lines (which would duplicate the
+// inline header). Parsing the output back recovers all three fields.
+func TestWriteEmitsInlineHeaderNoSeparateStatusPhase(t *testing.T) {
+	projects := []Project{
+		{Name: "Workflow engine", Status: "active", Phase: "production", Repos: []string{"GoCodeAlone/workflow"}},
+	}
+	var buf bytes.Buffer
+	if err := Write(&buf, projects, nil); err != nil {
+		t.Fatal(err)
+	}
+	body := buf.String()
+
+	// Inline header present (the ONE identity line).
+	wantHeader := "## Workflow engine   status: active   phase: production"
+	if !strings.Contains(body, wantHeader) {
+		t.Errorf("missing inline header %q:\n%s", wantHeader, body)
+	}
+
+	// NO standalone status:/phase: bullet lines (the redundant lines FIX 1 kills).
+	// Scan line-by-line so a status value containing "status:" doesn't false-match.
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// The inline header legitimately contains "status:"/"phase:" — skip it.
+		if strings.HasPrefix(trimmed, "## ") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "status:") {
+			t.Errorf("FIX 1 VIOLATION: standalone status line emitted (should be inline only): %q", line)
+		}
+		if strings.HasPrefix(trimmed, "phase:") {
+			t.Errorf("FIX 1 VIOLATION: standalone phase line emitted (should be inline only): %q", line)
+		}
+	}
+
+	// Round-trip: parse recovers Name/Status/Phase from the inline header.
+	path := writeFixture(t, "PROJECTS.md", body)
+	parsed, err := ParseProjects(path)
+	if err != nil {
+		t.Fatalf("ParseProjects: %v", err)
+	}
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(parsed))
+	}
+	if parsed[0].Name != "Workflow engine" || parsed[0].Status != "active" || parsed[0].Phase != "production" {
+		t.Errorf("round-trip inline header = %+v, want Name=Workflow engine Status=active Phase=production", parsed[0])
+	}
+}
+
 // TestWriteIncludesHeaderAndUnmapped verifies Write emits the file header
 // (title + block-shape legend) and the ## Unmapped section listing repos not
 // in any project.

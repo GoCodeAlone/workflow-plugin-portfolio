@@ -14,10 +14,8 @@ const fileHeader = `# Projects
 <!-- Human-curated mapping of logical projects to repo sets, with generator-
      written scan roll-ups. Block shape:
 
-       ## <project>
-       status: <free-form status>
-       phase: <number>
-       - repos: <owner/name>, <owner/name>, ...   (comma-sep full-names)
+       ## <project>   status: <free-form status>   phase: <number>
+       - repos: <owner/name>, <owner/name>, ...   (comma-sep full-names; glob suffix "*" allowed)
        - goal: <one-line goal>                      (curated)
        - blockers: <current blockers>               (curated)
        - next: <next step>                          (curated)
@@ -25,6 +23,7 @@ const fileHeader = `# Projects
        - scan: last-activity <date>, active <n>/<total> repos, open-PRs <n>, open-issues <n>
                                                     (generator-written; rewritten each scan)
 
+     status + phase live INLINE on the ` + "`## <project>`" + ` header (3-space separators).
      Curated fields (status, phase, repos, goal, blockers, next, design) are
      preserved byte-identical across re-scans — only the - scan: row changes.
      A trailing Unmapped section lists catalog repos in no project (generator-
@@ -59,10 +58,13 @@ func Write(w io.Writer, projects []Project, unmapped []string) error {
 
 // writeProject renders one project block. Curated fields are rendered
 // VERBATIM (P-V1) — the scan row is the only generator-written field.
+//
+// The status + phase are emitted INLINE on the `## <name>` header
+// (`## <name>   status: <status>   phase: <phase>`, 3-space separators), so a
+// block carries exactly ONE identity line — no separate status/phase rows that
+// would duplicate the inline header.
 func writeProject(b *strings.Builder, p Project) {
-	fmt.Fprintf(b, "## %s\n\n", p.Name)
-	fmt.Fprintf(b, "status: %s\n", p.Status)
-	fmt.Fprintf(b, "phase: %s\n\n", p.Phase)
+	fmt.Fprintf(b, "## %s   status: %s   phase: %s\n\n", p.Name, p.Status, p.Phase)
 
 	fmt.Fprintf(b, "- repos: %s\n", strings.Join(p.Repos, ", "))
 	fmt.Fprintf(b, "- goal: %s\n", p.Goal)

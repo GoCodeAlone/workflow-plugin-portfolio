@@ -211,6 +211,131 @@ func TestScanE2EProjectsRollupOptInNotCreatedWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestScanE2EProjectsGlobRollupWithPrecedence is the FIX 2 e2e proof: a seeded
+// PROJECTS.md with (a) a glob `GoCodeAlone/workflow-plugin-*` in one project
+// and (b) an explicit `GoCodeAlone/workflow-plugin-compute` in another → scan
+// rolls up the glob members under the glob project (minus compute), the
+// explicit repo under its project (explicit over glob), with no double-count,
+// AND emits inline headers (FIX 1). The curated glob `repos:` row is preserved
+// verbatim (P-V1) — it is NOT expanded in the written PROJECTS.md.
+func TestScanE2EProjectsGlobRollupWithPrecedence(t *testing.T) {
+	hasGitE2E(t)
+	ws := t.TempDir()
+
+	// Fixture repos: auth + compute (explicit claim) + infra (glob member) +
+	// workflow (not a plugin — glob must not match it).
+	for _, name := range []string{"workflow-plugin-auth", "workflow-plugin-compute", "workflow-plugin-infra", "workflow"} {
+		dir := filepath.Join(ws, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		makeFixtureGitRepo(t, dir, "https://github.com/GoCodeAlone/"+name+".git")
+	}
+
+	taxPath := filepath.Join(ws, "taxonomy.yaml")
+	writeFixtureTaxonomy(t, taxPath)
+
+	docsDir := filepath.Join(ws, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed: engine carries the glob; compute carries the explicit repo. The
+	// glob repos: row is the curated value that MUST survive the scan verbatim.
+	seedProjectsMD := `# Projects
+
+<!-- intro -->
+
+## Workflow engine   status: active   phase: production
+
+- repos: GoCodeAlone/workflow, GoCodeAlone/workflow-plugin-*
+- goal: engine
+- scan:
+
+## Workflow-Compute   status: active   phase: shipped
+
+- repos: GoCodeAlone/workflow-plugin-compute
+- goal: compute
+- scan:
+`
+	projectsPath := filepath.Join(docsDir, "PROJECTS.md")
+	if err := os.WriteFile(projectsPath, []byte(seedProjectsMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runScanForTest(t.Context(), ws, taxPath, &stdout, &stderr); code != 0 {
+		t.Fatalf("scan exit %d; stderr:\n%s\nstdout:\n%s", code, stderr.String(), stdout.String())
+	}
+
+	data, err := os.ReadFile(projectsPath)
+	if err != nil {
+		t.Fatalf("read PROJECTS.md: %v", err)
+	}
+	body := string(data)
+
+	// P-V1: the curated glob repos: row is preserved VERBATIM (not expanded).
+	if !strings.Contains(body, "- repos: GoCodeAlone/workflow, GoCodeAlone/workflow-plugin-*") {
+		t.Errorf("curated glob repos: row not preserved verbatim (P-V1):\n%s", body)
+	}
+
+	// FIX 1: inline headers present (no standalone status:/phase: lines).
+	if !strings.Contains(body, "## Workflow engine   status: active   phase: production") {
+		t.Errorf("missing inline engine header:\n%s", body)
+	}
+	if !strings.Contains(body, "## Workflow-Compute   status: active   phase: shipped") {
+		t.Errorf("missing inline compute header:\n%s", body)
+	}
+	// No standalone status/phase lines (skip the inline header lines).
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "status:") || strings.HasPrefix(trimmed, "phase:") {
+			t.Errorf("FIX 1 VIOLATION: standalone %q emitted:\n%s", line, body)
+		}
+	}
+
+	// FIX 2: engine scan reflects glob expansion (workflow + auth + infra = 3
+	// members; compute excluded via explicit-over-glob precedence). Extract
+	// the scan row from the engine BLOCK (skip the header legend which also
+	// mentions "scan: last-activity").
+	engineBlock := body
+	if idx := strings.Index(body, "## Workflow engine"); idx >= 0 {
+		engineBlock = body[idx:]
+		// Limit to the engine block (up to the next project heading).
+		if next := strings.Index(engineBlock[len("## Workflow engine"):], "\n## "); next >= 0 {
+			engineBlock = engineBlock[:len("## Workflow engine")+next]
+		}
+	}
+	engineScan := extractLine(engineBlock, "- scan:")
+	if engineScan == "" {
+		t.Fatalf("engine scan row not populated:\n%s", body)
+	}
+	// Engine: 3/3 (workflow + auth + infra). compute is NOT in engine.
+	if !strings.Contains(engineScan, "active 3/3 repos") {
+		t.Errorf("engine scan = %q; want 3/3 repos (workflow+auth+infra, compute excluded via precedence)", engineScan)
+	}
+
+	// workflow-plugin-compute must NOT appear in the Unmapped section (it is
+	// claimed by Workflow-Compute). It also must NOT roll up under the engine.
+	unmappedSection := ""
+	if idx := strings.Index(body, "## Unmapped"); idx >= 0 {
+		unmappedSection = body[idx:]
+	}
+	if strings.Contains(unmappedSection, "workflow-plugin-compute") {
+		t.Errorf("compute must not be unmapped (explicitly claimed):\n%s", unmappedSection)
+	}
+	// auth + infra should NOT be unmapped either (absorbed by the engine glob).
+	if strings.Contains(unmappedSection, "workflow-plugin-auth") {
+		t.Errorf("auth must not be unmapped (absorbed by engine glob):\n%s", unmappedSection)
+	}
+	if strings.Contains(unmappedSection, "workflow-plugin-infra") {
+		t.Errorf("infra must not be unmapped (absorbed by engine glob):\n%s", unmappedSection)
+	}
+}
+
 // extractLine returns the first line in body that contains substr (trimmed).
 func extractLine(body, substr string) string {
 	for _, line := range strings.Split(body, "\n") {
