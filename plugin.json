@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "author": "GoCodeAlone",
   "description": "Cross-repo portfolio catalog generator (wfctl portfolio scan|status)",
+  "minEngineVersion": "0.80.25",
   "capabilities": {
     "cliCommands": [
       {

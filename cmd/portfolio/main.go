@@ -32,7 +32,25 @@ import (
 	"github.com/GoCodeAlone/workflow-plugin-portfolio/internal/scanner"
 	"github.com/GoCodeAlone/workflow-plugin-portfolio/internal/visibility"
 	"github.com/GoCodeAlone/workflow/capability/inventory"
+	sdk "github.com/GoCodeAlone/workflow/plugin/external/sdk"
 )
+
+// Version is the build-version string. It defaults to "dev" and is
+// ldflag-injected at release time via goreleaser
+// (-X main.Version={{.Version}}), then resolved through the workflow SDK so
+// the binary reports its release tag (or a "(devel) [@ <sha>]" fallback when
+// no ldflag fires). This satisfies the workflow release contract
+// (wfctl plugin validate-contract) the same way hybrid go-plugin/CLI plugins
+// do — see workflow/plugin/external/sdk/buildversion.go.
+var Version = "dev"
+
+// buildVersionOption is the SDK ServeOption a hybrid plugin would pass to
+// sdk.Serve. The portfolio plugin is CLI-only (no gRPC host surface), so it
+// does not call sdk.Serve, but it still constructs the option via the SDK's
+// prescribed wiring (sdk.WithBuildVersion(sdk.ResolveBuildVersion(Version)))
+// so the resolved version is computed once and the contract pattern is
+// honored. scan reads the resolved value through workflowVersion().
+var buildVersionOption = sdk.WithBuildVersion(sdk.ResolveBuildVersion(Version))
 
 const usage = `portfolio — cross-repo portfolio catalog generator
 
@@ -563,12 +581,14 @@ func writeFollowups(path string, fups []followups.FollowUp) error {
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
-// workflowVersion returns the workflow module version stamp for the
-// inventory metadata. In a real build this could be derived from the
-// module; for now it's a build-time constant default (tests override via
-// scanOptions).
+// workflowVersion returns the resolved build-version string for the scan
+// inventory metadata. It is the value the SDK computed from the ldflag-
+// injected Version var (buildVersionOption carries it; we read it back via
+// sdk.ResolveBuildVersion so the CLI path and any future Serve wiring share
+// one source of truth).
 func workflowVersion() string {
-	return "portfolio-scan"
+	_ = buildVersionOption // ensure the SDK-wired option is referenced
+	return sdk.ResolveBuildVersion(Version)
 }
 
 func isHelp(s string) bool {

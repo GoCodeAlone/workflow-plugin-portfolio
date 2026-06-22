@@ -22,6 +22,12 @@ builds:
     goarch:
       - amd64
       - arm64
+    # Inject the release tag into the Version var resolved by
+    # sdk.ResolveBuildVersion (cmd/portfolio/main.go), satisfying the
+    # release-contract ldflag check (wfctl plugin validate-contract).
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
 
 archives:
   # FLAT archive: no wrap_in_directory. plugin.json sits at the archive
