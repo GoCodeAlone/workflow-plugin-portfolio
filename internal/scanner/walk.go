@@ -45,12 +45,12 @@ type Repo struct {
 // included for completeness (a bare check would also exclude it, but a
 // root-level .git dir would otherwise be detected as a repo by rev-parse).
 var reservedTopLevelNames = map[string]bool{
-	"_worktrees":        true,
-	"_codex_worktrees":  true,
-	".codex-worktrees":  true,
-	"_tmp":              true,
-	".claude":           true,
-	".git":              true,
+	"_worktrees":       true,
+	"_codex_worktrees": true,
+	".codex-worktrees": true,
+	"_tmp":             true,
+	".claude":          true,
+	".git":             true,
 }
 
 // WalkRepos walks the IMMEDIATE SIBLING directories of root, returning the
@@ -68,9 +68,15 @@ func WalkRepos(root string, logw io.Writer) ([]Repo, error) {
 		logw = io.Discard
 	}
 
-	// Resolve root through symlinks once so all child paths share a
-	// canonical base (macOS /var -> /private/var).
-	realRoot, err := filepath.EvalSymlinks(root)
+	// Resolve root through symlinks once so all child paths share an
+	// absolute canonical base (macOS /var -> /private/var). EvalSymlinks
+	// preserves a relative input such as ".", while git returns absolute
+	// toplevels; normalize before containment checks.
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("absolute walk root %q: %w", root, err)
+	}
+	realRoot, err := filepath.EvalSymlinks(absRoot)
 	if err != nil {
 		return nil, fmt.Errorf("walk root %q: %w", root, err)
 	}

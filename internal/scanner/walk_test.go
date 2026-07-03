@@ -214,6 +214,37 @@ func TestWalkReposOriginlessKept(t *testing.T) {
 	}
 }
 
+func TestWalkReposRelativeRootUsesCanonicalAbsoluteBase(t *testing.T) {
+	hasGit(t)
+	root := t.TempDir()
+	makeRepo(t, filepath.Join(root, "real"), "https://example.com/real.git")
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+
+	var stderr strings.Builder
+	repos, err := WalkRepos(".", &stderr)
+	if err != nil {
+		t.Fatalf("WalkRepos: %v\nstderr: %s", err, stderr.String())
+	}
+	if len(repos) != 1 {
+		t.Fatalf("expected relative root scan to discover one repo, got %d; stderr:\n%s", len(repos), stderr.String())
+	}
+	if got := filepath.Base(repos[0].Path); got != "real" {
+		t.Fatalf("repo base = %q, want real; stderr:\n%s", got, stderr.String())
+	}
+}
+
 func keysSorted(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
