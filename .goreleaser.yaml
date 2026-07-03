@@ -32,7 +32,8 @@ builds:
 archives:
   # FLAT archive: no wrap_in_directory. plugin.json sits at the archive
   # root next to the binary, matching workflow-plugin-admin / -hover.
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
     files:
       - plugin.json

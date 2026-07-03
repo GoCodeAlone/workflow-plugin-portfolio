@@ -176,6 +176,65 @@ func TestScanE2EPreservesManualFollowupsSection(t *testing.T) {
 	}
 }
 
+func TestScanE2ERelativeWorkspaceRootDiscoversReposAndPreservesManualFollowups(t *testing.T) {
+	hasGitE2E(t)
+	ws := t.TempDir()
+
+	repoAuth := filepath.Join(ws, "workflow-plugin-auth")
+	if err := os.MkdirAll(repoAuth, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	makeFixtureGitRepo(t, repoAuth, "https://github.com/GoCodeAlone/workflow-plugin-auth.git")
+
+	taxPath := filepath.Join(ws, "taxonomy.yaml")
+	writeFixtureTaxonomy(t, taxPath)
+
+	docsDir := filepath.Join(ws, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	followupsPath := filepath.Join(docsDir, "FOLLOWUPS.md")
+	manualSection := "## Manual Follow-ups\n\n- keep operator-owned backlog item\n"
+	seed := "# Open Follow-ups\n\n_No open follow-ups found in retros._\n\n" + manualSection
+	if err := os.WriteFile(followupsPath, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+	if err := os.Chdir(ws); err != nil {
+		t.Fatalf("chdir workspace: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runScanForTest(t.Context(), ".", taxPath, &stdout, &stderr); code != 0 {
+		t.Fatalf("scan exit %d; stderr:\n%s\nstdout:\n%s", code, stderr.String(), stdout.String())
+	}
+
+	portfolioData, err := os.ReadFile(filepath.Join(docsDir, "PORTFOLIO.md"))
+	if err != nil {
+		t.Fatalf("read PORTFOLIO.md: %v", err)
+	}
+	if !strings.Contains(string(portfolioData), "GoCodeAlone/workflow-plugin-auth") {
+		t.Fatalf("relative workspace root scan did not discover repo\nstdout:\n%s\nstderr:\n%s\nportfolio:\n%s", stdout.String(), stderr.String(), string(portfolioData))
+	}
+
+	followupsData, err := os.ReadFile(followupsPath)
+	if err != nil {
+		t.Fatalf("read FOLLOWUPS.md: %v", err)
+	}
+	if !strings.Contains(string(followupsData), manualSection) {
+		t.Fatalf("manual follow-up section was not preserved with relative workspace root\n---\n%s", string(followupsData))
+	}
+}
+
 // TestScanE2EV1StatusPreservedAcrossRuns is the V1 HEADLINE E2E PROOF:
 // run scan TWICE on the same workspace; all status: lines must be byte-
 // identical between the two runs. ALSO: a curated status planted in a seed
