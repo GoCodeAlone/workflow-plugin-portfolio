@@ -104,3 +104,39 @@ func TestWriteCatalogMarkdownEscapes(t *testing.T) {
 		t.Errorf("multi-line status not rendered\n%s", out)
 	}
 }
+
+func TestWriteCatalogMarkdownCleanForEmptyGeneratedFields(t *testing.T) {
+	projects := []Project{
+		{Repo: "A/x", Category: "plugin"},
+	}
+	var buf bytes.Buffer
+	if err := WriteCatalog(&buf, projects, nil); err != nil {
+		t.Fatalf("WriteCatalog: %v", err)
+	}
+	out := buf.String()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasSuffix(line, " ") || strings.HasSuffix(line, "\t") {
+			t.Fatalf("line has trailing whitespace: %q\n---\n%s", line, out)
+		}
+	}
+	if strings.Contains(out, "- visibility: \n") {
+		t.Fatalf("empty visibility field must not emit trailing value space\n---\n%s", out)
+	}
+}
+
+func TestWriteCatalogEndsWithSingleNewline(t *testing.T) {
+	projects := []Project{
+		{Repo: "A/x", Category: "plugin"},
+	}
+	var buf bytes.Buffer
+	if err := WriteCatalog(&buf, projects, nil); err != nil {
+		t.Fatalf("WriteCatalog: %v", err)
+	}
+	out := buf.String()
+	if !strings.HasSuffix(out, "\n") {
+		t.Fatalf("catalog must end with newline")
+	}
+	if strings.HasSuffix(out, "\n\n") {
+		t.Fatalf("catalog must end with exactly one newline, got blank line at EOF\n---\n%s", out)
+	}
+}

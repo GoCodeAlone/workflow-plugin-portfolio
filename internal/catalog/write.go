@@ -45,7 +45,7 @@ func WriteCatalog(w io.Writer, projects []Project, inv *inventory.Inventory) err
 		writeToolingInventory(&b, inv)
 	}
 
-	_, err := io.WriteString(w, b.String())
+	_, err := io.WriteString(w, singleFinalNewline(b.String()))
 	return err
 }
 
@@ -55,7 +55,7 @@ func WriteCatalog(w io.Writer, projects []Project, inv *inventory.Inventory) err
 func writeProjectBlock(b *strings.Builder, p Project) {
 	fmt.Fprintf(b, "## %s\n\n", p.Repo)
 	fmt.Fprintf(b, "- category: %s\n", escapeTableCell(p.Category))
-	fmt.Fprintf(b, "- visibility: %s\n", escapeTableCell(p.Visibility))
+	writeListField(b, "visibility", p.Visibility)
 	if p.Scan.LastCommitISO != "" {
 		fmt.Fprintf(b, "- last-commit: %s\n", escapeTableCell(p.Scan.LastCommitISO))
 	}
@@ -93,6 +93,18 @@ func writeProjectBlock(b *strings.Builder, p Project) {
 		}
 	}
 	b.WriteString("\n")
+}
+
+func writeListField(b *strings.Builder, name, value string) {
+	if value == "" {
+		fmt.Fprintf(b, "- %s:\n", name)
+		return
+	}
+	fmt.Fprintf(b, "- %s: %s\n", name, escapeTableCell(value))
+}
+
+func singleFinalNewline(s string) string {
+	return strings.TrimRight(s, "\n") + "\n"
 }
 
 // writeToolingInventory renders the C4 tooling inventory section from

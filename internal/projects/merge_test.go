@@ -260,3 +260,18 @@ func TestWriteEmptyUnmappedOmitsSection(t *testing.T) {
 		t.Errorf("Unmapped section should be omitted when empty:\n%s", buf.String())
 	}
 }
+
+func TestWriteEndsWithSingleNewline(t *testing.T) {
+	projects := []Project{{Name: "p", Repos: []string{"GoCodeAlone/a"}}}
+	var buf bytes.Buffer
+	if err := Write(&buf, projects, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.HasSuffix(out, "\n") {
+		t.Fatalf("PROJECTS.md must end with newline")
+	}
+	if strings.HasSuffix(out, "\n\n") {
+		t.Fatalf("PROJECTS.md must end with exactly one newline, got blank line at EOF\n---\n%s", out)
+	}
+}
