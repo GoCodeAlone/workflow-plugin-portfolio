@@ -52,7 +52,7 @@ func Write(w io.Writer, projects []Project, unmapped []string) error {
 		writeUnmapped(&b, unmapped)
 	}
 
-	_, err := io.WriteString(w, b.String())
+	_, err := io.WriteString(w, singleFinalNewline(b.String()))
 	return err
 }
 
@@ -86,4 +86,8 @@ func writeUnmapped(b *strings.Builder, unmapped []string) {
 		fmt.Fprintf(b, "- %s\n", r)
 	}
 	b.WriteString("\n")
+}
+
+func singleFinalNewline(s string) string {
+	return strings.TrimRight(s, "\n") + "\n"
 }
