@@ -86,6 +86,7 @@ The leading --wfctl-cli flag is required for CLI dispatch.
 // to a workspace root (the sibling `workflow` repo hosts it). Used as the
 // --taxonomy default when that flag is absent.
 const defaultTaxonomyRelPath = "workflow/data/capabilities/taxonomy.yaml"
+const manualFollowupsHeading = "## Manual Follow-ups"
 
 func main() {
 	os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr))
@@ -624,6 +625,11 @@ func registryMinEngine(entry scanner.RegistryEntry) string {
 
 // writeFollowups renders the extracted follow-ups to FOLLOWUPS.md.
 func writeFollowups(path string, fups []followups.FollowUp) error {
+	manualSection, err := readManualFollowupsSection(path)
+	if err != nil {
+		return err
+	}
+
 	var b strings.Builder
 	b.WriteString("# Open Follow-ups\n\n")
 	b.WriteString("<!-- Extracted from docs/retros/**/*.md by `wfctl portfolio scan`.\n")
@@ -654,7 +660,32 @@ func writeFollowups(path string, fups []followups.FollowUp) error {
 			b.WriteString("\n")
 		}
 	}
+	if manualSection != "" {
+		if !strings.HasSuffix(b.String(), "\n\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString(manualSection)
+	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func readManualFollowupsSection(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read existing followups for manual section: %w", err)
+	}
+	body := string(data)
+	idx := strings.Index(body, "\n"+manualFollowupsHeading)
+	if idx >= 0 {
+		return strings.Trim(body[idx+1:], "\n") + "\n", nil
+	}
+	if strings.HasPrefix(body, manualFollowupsHeading) {
+		return strings.Trim(body, "\n") + "\n", nil
+	}
+	return "", nil
 }
 
 // workflowVersion returns the resolved build-version string for the scan

@@ -135,6 +135,47 @@ func TestScanE2EWritesPortfolioWithBlocks(t *testing.T) {
 	}
 }
 
+// TestScanE2EPreservesManualFollowupsSection proves that the generated
+// follow-up writer keeps the human-maintained section across scan runs.
+func TestScanE2EPreservesManualFollowupsSection(t *testing.T) {
+	hasGitE2E(t)
+	ws := t.TempDir()
+
+	repoAuth := filepath.Join(ws, "workflow-plugin-auth")
+	if err := os.MkdirAll(repoAuth, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	makeFixtureGitRepo(t, repoAuth, "https://github.com/GoCodeAlone/workflow-plugin-auth.git")
+
+	taxPath := filepath.Join(ws, "taxonomy.yaml")
+	writeFixtureTaxonomy(t, taxPath)
+
+	docsDir := filepath.Join(ws, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	followupsPath := filepath.Join(docsDir, "FOLLOWUPS.md")
+	manualSection := "## Manual Follow-ups\n\n- keep operator-owned backlog item\n"
+	seed := "# Open Follow-ups\n\n_No open follow-ups found in retros._\n\n" + manualSection
+	if err := os.WriteFile(followupsPath, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runScanForTest(t.Context(), ws, taxPath, &stdout, &stderr); code != 0 {
+		t.Fatalf("scan exit %d; stderr:\n%s\nstdout:\n%s", code, stderr.String(), stdout.String())
+	}
+
+	data, err := os.ReadFile(followupsPath)
+	if err != nil {
+		t.Fatalf("read FOLLOWUPS.md: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, manualSection) {
+		t.Fatalf("manual follow-up section was not preserved\n---\n%s", body)
+	}
+}
+
 // TestScanE2EV1StatusPreservedAcrossRuns is the V1 HEADLINE E2E PROOF:
 // run scan TWICE on the same workspace; all status: lines must be byte-
 // identical between the two runs. ALSO: a curated status planted in a seed
@@ -343,11 +384,11 @@ status:
 // repo). Returns the exit code. Uses context.Background semantics.
 func runScanForTest(ctx context.Context, ws, taxonomyPath string, stdout, stderr *bytes.Buffer) int {
 	opts := scanOptions{
-		workspaceRoot:     ws,
-		taxonomyPath:      taxonomyPath,
-		skipVisibility:    true, // e2e fixtures aren't real gh repos
-		workflowVersion:   "test",
-		visibilityTarget:  "GoCodeAlone/workspace",
+		workspaceRoot:    ws,
+		taxonomyPath:     taxonomyPath,
+		skipVisibility:   true, // e2e fixtures aren't real gh repos
+		workflowVersion:  "test",
+		visibilityTarget: "GoCodeAlone/workspace",
 	}
 	return runScan(ctx, opts, stdout, stderr)
 }
