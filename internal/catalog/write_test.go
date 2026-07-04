@@ -124,6 +124,35 @@ func TestWriteCatalogMarkdownCleanForEmptyGeneratedFields(t *testing.T) {
 	}
 }
 
+func TestWriteCatalogRendersPartialUnknownReleaseFacts(t *testing.T) {
+	projects := []Project{
+		{
+			Repo:     "GoCodeAlone/workflow",
+			Category: "engine",
+			Release: ReleaseFacts{
+				LatestRelease:     "v0.84.6",
+				OpenPRs:           2,
+				OpenIssuesUnknown: true,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := WriteCatalog(&buf, projects, nil); err != nil {
+		t.Fatalf("WriteCatalog: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"- latest-release: v0.84.6",
+		"- open-prs: 2",
+		"- open-issues: ?",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
 func TestWriteCatalogEndsWithSingleNewline(t *testing.T) {
 	projects := []Project{
 		{Repo: "A/x", Category: "plugin"},
