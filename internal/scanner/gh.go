@@ -17,9 +17,24 @@ var ErrGHUnavailable = errors.New("gh unavailable or unauthenticated")
 
 // ghFacts is the cached payload for one repo's gh queries.
 type ghFacts struct {
-	openPRs       int
-	openIssues    int
-	latestRelease string
+	openPRs              int
+	openPRsUnknown       bool
+	openIssues           int
+	openIssuesUnknown    bool
+	latestRelease        string
+	latestReleaseUnknown bool
+}
+
+// GHFactsResult is the detailed, per-field gh enrichment result for one repo.
+// Unknown flags distinguish "gh could not answer this field" from real zero
+// counts or a repo with no stable releases.
+type GHFactsResult struct {
+	OpenPRs              int
+	OpenPRsUnknown       bool
+	OpenIssues           int
+	OpenIssuesUnknown    bool
+	LatestRelease        string
+	LatestReleaseUnknown bool
 }
 
 // ghCache memoizes GHFacts per-repoFullName so repeated lookups during a
@@ -32,61 +47,86 @@ var ghCache = struct {
 	m: make(map[string]ghFacts),
 }
 
-// GHFacts queries gh for a repo's open PR count, open issue count, and
-// latest release tag. Results are cached per-repo in-process for the life of
-// the scan. On any gh failure (binary missing, offline, unauthenticated,
-// rate-limited, repo not found) it returns zero values plus a non-nil
-// sentinel error (ErrGHUnavailable) so callers degrade per V5 rather than
-// abort the whole scan.
+// GHFacts queries gh for a repo's open PR count, open issue count, and latest
+// stable release tag. It preserves the legacy all-or-nothing contract: if any
+// field is unknown, it returns ErrGHUnavailable so old callers do not mistake
+// zero values for known zeroes. New callers that can render partial results
+// should use GHFactsDetailed.
 //
 // The three gh invocations use CombinedOutput so stderr is available for the
 // error message:
 //
 //	gh pr list --state open --json number
 //	gh issue list --state open --json number
-//	gh release list --limit 1
+//	gh release view --json tagName,isPrerelease
 //
 // Counts derive from the JSON array length (only `number` is requested to
-// minimize payload). The latest release is the first line of the release
-// table's name column.
+// minimize payload). The latest release follows GitHub's latest stable
+// release semantics, with a stable-list fallback for older gh versions.
 func GHFacts(repoFullName string) (openPRs, openIssues int, latestRelease string, err error) {
+	facts, err := GHFactsDetailed(repoFullName)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	if facts.OpenPRsUnknown || facts.OpenIssuesUnknown || facts.LatestReleaseUnknown {
+		return facts.OpenPRs, facts.OpenIssues, facts.LatestRelease, fmt.Errorf("%w: partial gh facts unavailable for %s", ErrGHUnavailable, repoFullName)
+	}
+	return facts.OpenPRs, facts.OpenIssues, facts.LatestRelease, nil
+}
+
+// GHFactsDetailed queries gh for a repo's open PR count, open issue count, and
+// latest stable release tag independently. Results are cached per-repo
+// in-process for the life of the scan. Field-specific failures set Unknown
+// flags; a non-nil error is returned only when gh cannot provide any field or
+// the repo name is invalid.
+func GHFactsDetailed(repoFullName string) (GHFactsResult, error) {
 	if strings.TrimSpace(repoFullName) == "" {
-		return 0, 0, "", fmt.Errorf("%w: empty repo name", ErrGHUnavailable)
+		return GHFactsResult{}, fmt.Errorf("%w: empty repo name", ErrGHUnavailable)
 	}
 
 	// Cache hit.
 	ghCache.mu.Lock()
 	if cached, ok := ghCache.m[repoFullName]; ok {
 		ghCache.mu.Unlock()
-		return cached.openPRs, cached.openIssues, cached.latestRelease, nil
+		return cached.toResult(), nil
 	}
 	ghCache.mu.Unlock()
 
 	if _, lookupErr := exec.LookPath("gh"); lookupErr != nil {
-		return 0, 0, "", fmt.Errorf("%w: gh binary not found in PATH (%v)", ErrGHUnavailable, lookupErr)
+		return GHFactsResult{}, fmt.Errorf("%w: gh binary not found in PATH (%v)", ErrGHUnavailable, lookupErr)
 	}
 
+	var result GHFactsResult
+	failures := 0
 	prs, prErr := ghCount(repoFullName, "pr", "--state", "open", "--json", "number")
 	if prErr != nil {
-		return 0, 0, "", prErr
+		result.OpenPRsUnknown = true
+		failures++
+	} else {
+		result.OpenPRs = prs
 	}
 	issues, issErr := ghCount(repoFullName, "issue", "--state", "open", "--json", "number")
 	if issErr != nil {
-		return 0, 0, "", issErr
+		result.OpenIssuesUnknown = true
+		failures++
+	} else {
+		result.OpenIssues = issues
 	}
 	rel, relErr := ghLatestRelease(repoFullName)
 	if relErr != nil {
-		return 0, 0, "", relErr
+		result.LatestReleaseUnknown = true
+		failures++
+	} else {
+		result.LatestRelease = rel
 	}
 
 	ghCache.mu.Lock()
-	ghCache.m[repoFullName] = ghFacts{
-		openPRs:       prs,
-		openIssues:    issues,
-		latestRelease: rel,
-	}
+	ghCache.m[repoFullName] = ghFactsFromResult(result)
 	ghCache.mu.Unlock()
-	return prs, issues, rel, nil
+	if failures == 3 {
+		return result, fmt.Errorf("%w: no gh facts available for %s", ErrGHUnavailable, repoFullName)
+	}
+	return result, nil
 }
 
 // ghCount runs `gh <kind> <repo> <args...>` expecting a JSON array, returning
@@ -104,12 +144,14 @@ func ghCount(repoFullName, kind string, args ...string) (int, error) {
 	return len(arr), nil
 }
 
-// ghLatestRelease runs `gh release list --repo <repo> --limit 1` and returns
-// the release tag (first whitespace-delimited field of the first row). A repo
-// with no releases returns an empty string WITHOUT error (the table is empty,
-// not a failure); a non-zero exit -> ErrGHUnavailable.
+// ghLatestRelease returns GitHub's latest stable release tag. `gh release view`
+// follows GitHub's latest-release semantics; fallback list mode explicitly
+// excludes drafts and prereleases for older gh versions.
 func ghLatestRelease(repoFullName string) (string, error) {
-	out, err := exec.Command("gh", "release", "list", "--repo", repoFullName, "--limit", "1").CombinedOutput()
+	if tag, err := ghLatestReleaseView(repoFullName); err == nil {
+		return tag, nil
+	}
+	out, err := exec.Command("gh", "release", "list", "--repo", repoFullName, "--exclude-drafts", "--exclude-pre-releases", "--limit", "1").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%w: gh release list %q: %v (%s)", ErrGHUnavailable, repoFullName, err, strings.TrimSpace(string(out)))
 	}
@@ -127,4 +169,48 @@ func ghLatestRelease(repoFullName string) (string, error) {
 		return "", nil
 	}
 	return fields[0], nil
+}
+
+func ghLatestReleaseView(repoFullName string) (string, error) {
+	out, err := exec.Command("gh", "release", "view", "--repo", repoFullName, "--json", "tagName,isPrerelease").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: gh release view %q: %v (%s)", ErrGHUnavailable, repoFullName, err, strings.TrimSpace(string(out)))
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return "", nil
+	}
+	var payload struct {
+		TagName      string `json:"tagName"`
+		IsPrerelease bool   `json:"isPrerelease"`
+	}
+	if jErr := json.Unmarshal([]byte(trimmed), &payload); jErr != nil {
+		return "", fmt.Errorf("%w: gh release view %q: unmarshal JSON (%v)", ErrGHUnavailable, repoFullName, jErr)
+	}
+	if payload.IsPrerelease {
+		return "", fmt.Errorf("%w: gh release view %q returned prerelease %q", ErrGHUnavailable, repoFullName, payload.TagName)
+	}
+	return payload.TagName, nil
+}
+
+func (f ghFacts) toResult() GHFactsResult {
+	return GHFactsResult{
+		OpenPRs:              f.openPRs,
+		OpenPRsUnknown:       f.openPRsUnknown,
+		OpenIssues:           f.openIssues,
+		OpenIssuesUnknown:    f.openIssuesUnknown,
+		LatestRelease:        f.latestRelease,
+		LatestReleaseUnknown: f.latestReleaseUnknown,
+	}
+}
+
+func ghFactsFromResult(f GHFactsResult) ghFacts {
+	return ghFacts{
+		openPRs:              f.OpenPRs,
+		openPRsUnknown:       f.OpenPRsUnknown,
+		openIssues:           f.OpenIssues,
+		openIssuesUnknown:    f.OpenIssuesUnknown,
+		latestRelease:        f.LatestRelease,
+		latestReleaseUnknown: f.LatestReleaseUnknown,
+	}
 }

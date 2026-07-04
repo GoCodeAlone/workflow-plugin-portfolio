@@ -71,24 +71,28 @@ type ScanFacts struct {
 	Path string
 }
 
-// ReleaseFacts holds gh-derived release/PR/issue facts. Empty/zero values
-// mean "unknown" (gh unavailable or repo not queryable), NOT "no releases".
+// ReleaseFacts holds gh-derived release/PR/issue facts. Unknown flags
+// disambiguate "gh could not answer this field" from real zero counts or a
+// repo with no stable releases.
 type ReleaseFacts struct {
 	// LatestRelease is the latest release tag (e.g. "v0.3.0"). Empty when
-	// gh was unavailable; distinct from a repo with zero releases (which
-	// gh reports as an empty release list — also empty string here, so
-	// callers emit "?" when ReleaseGHAbsent is true).
-	LatestRelease string
+	// the repo has no stable releases or when LatestReleaseUnknown is true.
+	LatestRelease        string
+	LatestReleaseUnknown bool
 
-	// OpenPRs is the count of open PRs. Zero when gh unavailable OR repo
-	// genuinely has zero open PRs (callers disambiguate via ReleaseGHAbsent).
-	OpenPRs int
+	// OpenPRs is the count of open PRs. Zero can mean known zero when
+	// OpenPRsUnknown is false.
+	OpenPRs        int
+	OpenPRsUnknown bool
 
-	// OpenIssues is the count of open issues. Same ambiguity as OpenPRs.
-	OpenIssues int
+	// OpenIssues is the count of open issues. Zero can mean known zero when
+	// OpenIssuesUnknown is false.
+	OpenIssues        int
+	OpenIssuesUnknown bool
 
 	// ReleaseGHAbsent is true when gh facts could not be collected (gh
-	// missing/offline/rate-limited) — callers emit "?" rather than "0".
+	// missing/offline/rate-limited). Deprecated: retained for existing tests
+	// and callers; new scanner paths should set per-field unknown flags.
 	ReleaseGHAbsent bool
 }
 

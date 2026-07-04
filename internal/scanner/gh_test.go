@@ -151,6 +151,40 @@ esac
 	}
 }
 
+func TestGHFactsDetailedFallsBackToStableReleaseList(t *testing.T) {
+	resetGHCache()
+	withFakeGH(t, `#!/bin/sh
+cmd="$*"
+case "$cmd" in
+  "pr list --repo GoCodeAlone/workflow --state open --json number")
+    printf '[]'
+    ;;
+  "issue list --repo GoCodeAlone/workflow --state open --json number")
+    printf '[]'
+    ;;
+  "release view --repo GoCodeAlone/workflow --json tagName,isPrerelease")
+    echo "unknown flag: --json" >&2
+    exit 1
+    ;;
+  "release list --repo GoCodeAlone/workflow --exclude-drafts --exclude-pre-releases --limit 1")
+    printf 'v0.84.6\tLatest\t2026-07-04T00:00:00Z\n'
+    ;;
+  *)
+    echo "unexpected gh args: $cmd" >&2
+    exit 99
+    ;;
+esac
+`)
+
+	facts, err := GHFactsDetailed("GoCodeAlone/workflow")
+	if err != nil {
+		t.Fatalf("GHFactsDetailed: %v", err)
+	}
+	if facts.LatestRelease != "v0.84.6" {
+		t.Fatalf("LatestRelease = %q, want fallback stable v0.84.6", facts.LatestRelease)
+	}
+}
+
 func resetGHCache() {
 	ghCache.mu.Lock()
 	defer ghCache.mu.Unlock()

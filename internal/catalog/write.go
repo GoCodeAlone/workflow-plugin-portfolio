@@ -69,11 +69,11 @@ func writeProjectBlock(b *strings.Builder, p Project) {
 		fmt.Fprintf(b, "- latest-release: %s\n", escapeTableCell(p.Release.LatestRelease))
 	}
 	prsField := fmt.Sprintf("%d", p.Release.OpenPRs)
-	if p.Release.ReleaseGHAbsent {
+	if p.Release.ReleaseGHAbsent || p.Release.OpenPRsUnknown {
 		prsField = "?"
 	}
 	issuesField := fmt.Sprintf("%d", p.Release.OpenIssues)
-	if p.Release.ReleaseGHAbsent {
+	if p.Release.ReleaseGHAbsent || p.Release.OpenIssuesUnknown {
 		issuesField = "?"
 	}
 	fmt.Fprintf(b, "- open-prs: %s\n", prsField)
