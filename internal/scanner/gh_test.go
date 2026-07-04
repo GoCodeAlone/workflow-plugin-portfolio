@@ -1,7 +1,10 @@
 package scanner
 
 import (
+	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -22,6 +25,7 @@ func hasGH(t *testing.T) {
 // overwritten; we assert it survives because the cache hit short-circuits).
 func TestGHFactsCacheReusesResult(t *testing.T) {
 	hasGH(t)
+	resetGHCache()
 	repo := "GoCodeAlone/workflow" // a real, public repo with PRs/issues/releases
 
 	prs1, issues1, rel1, err1 := GHFacts(repo)
@@ -54,17 +58,145 @@ func TestGHFactsCacheReusesResult(t *testing.T) {
 // the sentinel skip error (non-nil) so callers can degrade per V5.
 func TestGHFactsMissingRepoReturnsSkipError(t *testing.T) {
 	hasGH(t)
+	resetGHCache()
 	_, _, _, err := GHFacts("GoCodeAlone/__definitely_not_a_real_repo_xyz_123__")
 	if err == nil {
 		t.Fatal("expected non-nil skip error for nonexistent repo, got nil")
+	}
+	if !errors.Is(err, ErrGHUnavailable) {
+		t.Fatalf("expected ErrGHUnavailable, got %v", err)
 	}
 }
 
 // TestGHFactsEmptyRepoReturnsError verifies an empty-string repo name is
 // rejected early (not passed to gh) with a skip error.
 func TestGHFactsEmptyRepoReturnsError(t *testing.T) {
+	resetGHCache()
 	_, _, _, err := GHFacts("")
 	if err == nil {
 		t.Fatal("expected skip error for empty repo name, got nil")
 	}
+	if !errors.Is(err, ErrGHUnavailable) {
+		t.Fatalf("expected ErrGHUnavailable, got %v", err)
+	}
+}
+
+func TestGHFactsDetailedPartialIssueFailureKeepsRelease(t *testing.T) {
+	resetGHCache()
+	withFakeGH(t, `#!/bin/sh
+cmd="$*"
+case "$cmd" in
+  "pr list --repo GoCodeAlone/workflow --state open --json number")
+    printf '[{"number":1},{"number":2}]'
+    ;;
+  "issue list --repo GoCodeAlone/workflow --state open --json number")
+    echo "issues disabled" >&2
+    exit 1
+    ;;
+  "release view --repo GoCodeAlone/workflow --json tagName,isPrerelease")
+    printf '{"tagName":"v0.84.6","isPrerelease":false}'
+    ;;
+  *)
+    echo "unexpected gh args: $cmd" >&2
+    exit 99
+    ;;
+esac
+`)
+
+	facts, err := GHFactsDetailed("GoCodeAlone/workflow")
+	if err != nil {
+		t.Fatalf("GHFactsDetailed returned whole-repo error for partial issue failure: %v", err)
+	}
+	if facts.OpenPRs != 2 || facts.OpenPRsUnknown {
+		t.Fatalf("OpenPRs = %d unknown=%v, want 2 known", facts.OpenPRs, facts.OpenPRsUnknown)
+	}
+	if !facts.OpenIssuesUnknown {
+		t.Fatalf("OpenIssuesUnknown = false, want true")
+	}
+	if facts.LatestRelease != "v0.84.6" || facts.LatestReleaseUnknown {
+		t.Fatalf("LatestRelease = %q unknown=%v, want v0.84.6 known", facts.LatestRelease, facts.LatestReleaseUnknown)
+	}
+}
+
+func TestGHFactsDetailedUsesLatestStableReleaseView(t *testing.T) {
+	resetGHCache()
+	withFakeGH(t, `#!/bin/sh
+cmd="$*"
+case "$cmd" in
+  "pr list --repo GoCodeAlone/workflow --state open --json number")
+    printf '[]'
+    ;;
+  "issue list --repo GoCodeAlone/workflow --state open --json number")
+    printf '[]'
+    ;;
+  "release view --repo GoCodeAlone/workflow --json tagName,isPrerelease")
+    printf '{"tagName":"v0.84.6","isPrerelease":false}'
+    ;;
+  "release list --repo GoCodeAlone/workflow --limit 1")
+    printf 'Snapshot\tLatest\t2026-07-04T00:00:00Z\n'
+    ;;
+  *)
+    echo "unexpected gh args: $cmd" >&2
+    exit 99
+    ;;
+esac
+`)
+
+	facts, err := GHFactsDetailed("GoCodeAlone/workflow")
+	if err != nil {
+		t.Fatalf("GHFactsDetailed: %v", err)
+	}
+	if facts.LatestRelease != "v0.84.6" {
+		t.Fatalf("LatestRelease = %q, want stable v0.84.6", facts.LatestRelease)
+	}
+}
+
+func TestGHFactsDetailedFallsBackToStableReleaseList(t *testing.T) {
+	resetGHCache()
+	withFakeGH(t, `#!/bin/sh
+cmd="$*"
+case "$cmd" in
+  "pr list --repo GoCodeAlone/workflow --state open --json number")
+    printf '[]'
+    ;;
+  "issue list --repo GoCodeAlone/workflow --state open --json number")
+    printf '[]'
+    ;;
+  "release view --repo GoCodeAlone/workflow --json tagName,isPrerelease")
+    echo "unknown flag: --json" >&2
+    exit 1
+    ;;
+  "release list --repo GoCodeAlone/workflow --exclude-drafts --exclude-pre-releases --limit 1")
+    printf 'v0.84.6\tLatest\t2026-07-04T00:00:00Z\n'
+    ;;
+  *)
+    echo "unexpected gh args: $cmd" >&2
+    exit 99
+    ;;
+esac
+`)
+
+	facts, err := GHFactsDetailed("GoCodeAlone/workflow")
+	if err != nil {
+		t.Fatalf("GHFactsDetailed: %v", err)
+	}
+	if facts.LatestRelease != "v0.84.6" {
+		t.Fatalf("LatestRelease = %q, want fallback stable v0.84.6", facts.LatestRelease)
+	}
+}
+
+func resetGHCache() {
+	ghCache.mu.Lock()
+	defer ghCache.mu.Unlock()
+	ghCache.m = make(map[string]ghFacts)
+}
+
+func withFakeGH(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	ghPath := filepath.Join(dir, "gh")
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

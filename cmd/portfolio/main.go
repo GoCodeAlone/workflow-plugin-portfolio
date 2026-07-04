@@ -261,17 +261,18 @@ func runScan(ctx context.Context, opts scanOptions, stdout, stderr io.Writer) in
 			proj.Scan.Uncommitted = uncommitted
 		}
 
-		// GH facts (PRs/issues/release) — degrade on ErrGHUnavailable.
-		openPRs, openIssues, latestRel, ghErr := scanner.GHFacts(repoName)
+		// GH facts (PRs/issues/release) — degrade per field on ErrGHUnavailable.
+		ghFacts, ghErr := scanner.GHFactsDetailed(repoName)
 		if ghErr != nil {
 			fmt.Fprintf(stderr, "warn: gh facts %s: %v (emitting ?)\n", repoName, ghErr)
-			proj.Release = catalog.ReleaseFacts{ReleaseGHAbsent: true}
-		} else {
-			proj.Release = catalog.ReleaseFacts{
-				LatestRelease: latestRel,
-				OpenPRs:       openPRs,
-				OpenIssues:    openIssues,
-			}
+		}
+		proj.Release = catalog.ReleaseFacts{
+			LatestRelease:        ghFacts.LatestRelease,
+			LatestReleaseUnknown: ghFacts.LatestReleaseUnknown || ghErr != nil,
+			OpenPRs:              ghFacts.OpenPRs,
+			OpenPRsUnknown:       ghFacts.OpenPRsUnknown || ghErr != nil,
+			OpenIssues:           ghFacts.OpenIssues,
+			OpenIssuesUnknown:    ghFacts.OpenIssuesUnknown || ghErr != nil,
 		}
 
 		// Registry entry (private + minEngineVersion) if this is a plugin
