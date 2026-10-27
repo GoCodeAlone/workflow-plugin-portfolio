@@ -30,6 +30,7 @@ func ParseCatalog(r io.Reader) ([]Project, error) {
 	var projects []Project
 	var current *Project
 	var inStatus bool
+	var inlineStatus bool
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -44,6 +45,7 @@ func ParseCatalog(r io.Reader) ([]Project, error) {
 				current = nil
 			}
 			inStatus = false
+			inlineStatus = false
 			// The Tooling Inventory section is not a project.
 			if heading == "Tooling Inventory" {
 				break
@@ -65,12 +67,17 @@ func ParseCatalog(r io.Reader) ([]Project, error) {
 		if strings.HasPrefix(trimmed, "status:") {
 			inStatus = true
 			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "status:"))
+			inlineStatus = rest != ""
 			if rest != "" {
-				// Inline status (single-line form).
+				// Seed inline content, then retain indented continuations.
 				current.Status = rest
-				inStatus = false
 			}
 			continue
+		}
+		// Inline statuses may continue only on indented lines. Let a following
+		// field fall through to normal parsing; retain legacy block tolerance.
+		if inStatus && inlineStatus && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			inStatus = false
 		}
 		if inStatus {
 			if trimmed == "" {
